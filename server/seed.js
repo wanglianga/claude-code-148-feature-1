@@ -2,7 +2,9 @@
 // 未开门/设备故障/线上咨询/已闭环），日期相对“今天”生成，任何时候演示都有当日数据
 import { createHash } from 'node:crypto'
 import db, { addEvent } from './db.js'
-import { createVisit } from './service.js'
+import {
+  createVisit, createJaundicePlan, assignRecheckTask, remindPrepare, rescheduleRecheckTask,
+} from './service.js'
 
 const hash = (s) => createHash('sha256').update('nbv:' + s).digest('hex')
 const day = 86400000
@@ -56,6 +58,9 @@ export function seed() {
   // 8 郑倩/郑小星：明天初访
   const a8 = arch(null, '郑倩', '郑小星', '男', -3, 3900, '剖宫产', '混合喂养', '中', '剖宫产切口愈合良好',
     '滨河小区 1 栋 101', '郑倩', '13900000008', -1, '良好', '巨大儿，注意喂养与血糖观察')
+  // 9 冯璐/冯小棠：临界值复测被家属两次改约，已升级社区医生待处置
+  const a9 = arch(null, '冯璐', '冯小棠', '女', -5, 3150, '顺产', '母乳喂养', '中', '会阴切口愈合良好',
+    '幸福里小区 8 栋 1 单元 703', '冯璐丈夫 何先生', '13900000009', -3, '一般', '家属白天常不在家，复测已改约两次')
 
   const insAppt = db.prepare(`INSERT INTO appointments (archive_id, nurse_id, type, scheduled_time, status, reason)
                               VALUES (?,?,?,?,?,?)`)
@@ -92,9 +97,29 @@ export function seed() {
     feeding_freq: 7, spit_up: '频繁', sleep: '嗜睡', breast: '乳头皲裂', mood: '焦虑', care_ability: '一般',
     device_issue: 1 }, nurseRow)
 
-  createVisit({ appointment_id: appt2, archive_id: a2, visit_time: iso(-2, '09:40'), weight: 2700,
-    bilirubin: 262, bilirubin_site: '额头', cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
-    feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurseRow)
+  const visit2 = createVisit({ appointment_id: appt2, archive_id: a2, visit_time: iso(-2, '09:40'), weight: 2700,
+    bilirubin: 262, bilirubin_site: '额头', device_code: 'JM-103-0217',
+    doctor_advice: '已电话请示张启明医生：262 µmol/L 接近阈值，暂不光疗，24 小时内复测，加强喂养，若升高或出现嗜睡拒奶直接就诊。',
+    cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
+    feeding_type: '混合喂养', feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurseRow).visit
+
+  // —— 黄疸临界值复查流程 ——
+  // 王乐乐（family2）：家属选择次日复测 → 生成复测任务 → 护士站指派刘洋带 JM-103-0217、确认今日 10:00 上门 → 已提醒准备喂养/排便记录
+  const plan2 = createJaundicePlan({ visitId: visit2.id, choice: 'recheck' }, { name: '王雪家属' })
+  assignRecheckTask(plan2.recheckTask.id, { nurseId: nurse2, deviceCode: 'JM-103-0217', scheduledTime: at(0, '10:00') }, '王芳')
+  remindPrepare(plan2.recheckTask.id, '刘洋')
+
+  // 冯小棠：昨日临界值访视（无家属账号，护士代录选择），复测已被家属改约两次 → 升级社区医生待处置
+  const appt9 = insAppt.run(a9, nurse2, '初访', at(-1, '09:30'), '已完成', '').lastInsertRowid
+  const visit9 = createVisit({ appointment_id: appt9, archive_id: a9, visit_time: iso(-1, '09:50'), weight: 3050,
+    bilirubin: 270, bilirubin_site: '额头', device_code: 'JM-103-0188',
+    doctor_advice: '接近阈值，建议次日复测；加强喂养至 8~12 次/日。',
+    cord: '干燥', stool_count: 2, stool_color: '黄绿色', urine_count: 6,
+    feeding_type: '母乳喂养', feeding_freq: 8, spit_up: '无', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurse2Row).visit
+  const plan9 = createJaundicePlan({ visitId: visit9.id, choice: 'recheck' }, { name: '冯璐家属' })
+  assignRecheckTask(plan9.recheckTask.id, { nurseId: nurse2, deviceCode: 'JM-103-0188', scheduledTime: at(0, '09:00') }, '刘洋')
+  rescheduleRecheckTask(plan9.recheckTask.id, { scheduledTime: at(0, '15:00'), reason: '家里临时来人，白天不在' }, '冯璐家属')
+  rescheduleRecheckTask(plan9.recheckTask.id, { scheduledTime: at(1, '10:00'), reason: '宝宝刚睡着，希望改到明天' }, '冯璐家属')
 
   // —— 未开门事件 + 再次预约事项 ——
   addEvent(a5, '未开门', '上门访视家属未开门', '敲门无人应答，电话未接通，已留联系卡', '王芳')

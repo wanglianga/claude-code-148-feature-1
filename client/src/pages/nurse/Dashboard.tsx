@@ -37,6 +37,16 @@ export default function Dashboard() {
         </div>
       )}
 
+      {(s.recheckTasks || 0) > 0 && (
+        <div className={`alert-box ${(s.escalatedTasks || 0) > 0 ? 'danger' : 'info'} row between`}>
+          <span>
+            🔁 黄疸复测任务 <b>{s.recheckTasks}</b> 项待上门
+            {(s.escalatedTasks || 0) > 0 && <>，其中 <b>{s.escalatedTasks}</b> 项二次改约已升级社区医生</>}
+          </span>
+          <Link to="/nurse/recheck-tasks" className="btn sm primary">去安排</Link>
+        </div>
+      )}
+
       <div className="card">
         <div className="card-title"><span className="dot" />今日待访视（含逾期未访）</div>
         {data.todayAppointments.length === 0 && <Empty text="今日暂无待访视家庭" icon="🎉" />}

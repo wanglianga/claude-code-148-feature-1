@@ -9,6 +9,7 @@ import ArchiveDetail from './pages/nurse/ArchiveDetail'
 import VisitForm from './pages/nurse/VisitForm'
 import Followups from './pages/nurse/Followups'
 import SyncCenter from './pages/nurse/SyncCenter'
+import RecheckTasks from './pages/nurse/RecheckTasks'
 import FamilyHome from './pages/family/FamilyHome'
 import FamilyVisits from './pages/family/FamilyVisits'
 import FamilyDocs from './pages/family/FamilyDocs'
@@ -40,8 +41,10 @@ export default function App() {
         <Route path="/nurse/archives/:id" element={<ArchiveDetail />} />
         <Route path="/nurse/visit/new" element={<VisitForm />} />
         <Route path="/nurse/followups" element={<Followups />} />
+        <Route path="/nurse/recheck-tasks" element={<RecheckTasks />} />
         <Route path="/nurse/sync" element={<SyncCenter />} />
         <Route path="/doctor" element={<Followups doctor />} />
+        <Route path="/doctor/recheck-tasks" element={<RecheckTasks doctor />} />
         <Route path="/family" element={<FamilyHome />} />
         <Route path="/family/visits" element={<FamilyVisits />} />
         <Route path="/family/docs" element={<FamilyDocs />} />

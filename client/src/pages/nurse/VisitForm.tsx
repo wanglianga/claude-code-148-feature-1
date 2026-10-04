@@ -30,6 +30,7 @@ export default function VisitForm() {
     appointment_id: appointmentId,
     visit_time: now16(),
     weight: undefined, bilirubin: undefined, bilirubin_site: '额头',
+    device_code: '', doctor_advice: '',
     cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
     feeding_type: '', feeding_freq: 8, spit_up: '无', sleep: '正常',
     breast: '正常', mood: '平稳', wound_check: '', care_ability: '',
@@ -50,6 +51,8 @@ export default function VisitForm() {
   // 实时风险预评估（与服务端同一套规则）
   const assess = useMemo(() => (archive ? assessVisit(archive, f) : null), [archive, f])
   const advice = adviceTouched ? f.advice || '' : assess?.advice || ''
+  const nearThreshold = !!assess && f.bilirubin != null && f.bilirubin !== ('' as any) &&
+    Number(f.bilirubin) >= assess.threshold - 34
 
   if (err) return <div className="alert-box danger">{err}</div>
   if (!archive) return <Empty text="档案加载中…" icon="⏳" />
@@ -158,6 +161,13 @@ export default function VisitForm() {
             <label>测量部位</label>
             <Seg options={['额头', '胸口', '大腿']} value={f.bilirubin_site!} onChange={(v) => set('bilirubin_site', v)} />
           </div>
+          <div className="field">
+            <label>经皮胆红素仪设备编号</label>
+            <input placeholder="如 JM-103-0217（机身铭牌）" value={f.device_code || ''} onChange={(e) => set('device_code', e.target.value)} />
+            {nearThreshold && !f.device_code && !f.device_issue && (
+              <div className="hint" style={{ color: 'var(--red)' }}>黄疸接近阈值：请登记设备编号，便于复测与转诊核对</div>
+            )}
+          </div>
         </div>
         <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
           <input type="checkbox" checked={!!f.device_issue} onChange={(e) => set('device_issue', e.target.checked)} style={{ width: 'auto' }} />
@@ -255,6 +265,16 @@ export default function VisitForm() {
             <label>护理建议（自动生成，可修改；家属端可见）</label>
             <textarea rows={4} value={advice} onChange={(e) => { setAdviceTouched(true); set('advice', e.target.value) }} />
           </div>
+          <div className="field">
+            <label>医生建议（现场电话请示医生后转述，或医生录入；家属端临界值页面会展示）</label>
+            <textarea rows={2} placeholder="如：已电话请示医生，暂不光疗，24h 内复测，加强喂养；若升高或嗜睡拒奶直接就诊"
+              value={f.doctor_advice || ''} onChange={(e) => set('doctor_advice', e.target.value)} />
+          </div>
+          {nearThreshold && !f.device_code && !f.device_issue && (
+            <div className="alert-box warn" style={{ marginBottom: 0 }}>
+              黄疸接近阈值：建议补登设备编号，并在医生建议中记录请示结果；提交后家属端可选择次日复测、当天就诊或居家观察。
+            </div>
+          )}
         </div>
       )}
 

@@ -1,6 +1,8 @@
 // 端到端验证脚本：node scripts/verify.mjs（需服务已启动，默认 http://localhost:8080）
 // 覆盖：登录、工作台、档案筛选、访视提交与风险结论、离线同步幂等、
-//       未开门/改约、随访闭环、医生决策、家属端总览/材料/咨询
+//       未开门/改约、随访闭环、医生决策、家属端总览/材料/咨询、
+//       黄疸临界值复查（设备编号/医生建议、家属三选择、风险告知、复测任务、
+//       准备提醒、二次改约升级社区医生、医生处置、复测升高转诊单带趋势）
 const BASE = process.env.BASE_URL || 'http://localhost:8080'
 let passed = 0, failed = 0
 const ok = (name, cond, extra = '') => {
@@ -102,7 +104,89 @@ ok('家属线上咨询', !!con.consult?.id)
 const reply = await call(nurse.token, 'POST', `/api/consults/${con.consult.id}/reply`, { reply: '可以，避开正午，每次15分钟左右。' })
 ok('护士回复咨询并闭环', reply.consult.status === '已回复')
 
-// 10 权限
+// 10 黄疸临界值复查全链路（李安安：家属三选择 → 复测任务 → 二次改约升级 → 医生处置）
+const famOverview0 = await call(family.token, 'GET', '/api/family/overview')
+ok('临界值访视可发起复查选择', !!famOverview0.criticalVisit && famOverview0.criticalVisit.need_recheck === 1,
+  `最近访视黄疸 ${famOverview0.criticalVisit?.bilirubin} 风险${famOverview0.criticalVisit?.risk_level}`)
+
+const liVisitId = visitRes.visit.id
+// 观察必须先确认风险告知
+const noAck = await fetch(`${BASE}/api/jaundice/plan`, {
+  method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${family.token}` },
+  body: JSON.stringify({ visitId: liVisitId, choice: 'observe', acknowledged: false }),
+}).then(j)
+ok('居家观察未确认风险告知被拦截', !!noAck.error, noAck.error)
+
+const planObs = await call(family.token, 'POST', '/api/jaundice/plan', { visitId: liVisitId, choice: 'observe', acknowledged: true })
+ok('居家观察生成风险告知与复查提醒',
+  planObs.plan?.choice === 'observe' && planObs.plan.risk_acknowledged === 1 && planObs.plan.risk_notice.includes('立即就诊')
+  && planObs.plan.due_date != null)
+
+const planRe = await call(family.token, 'POST', '/api/jaundice/plan', { visitId: liVisitId, choice: 'recheck' })
+ok('选择次日复测生成明确复测任务',
+  planRe.plan?.recheckTask?.id && planRe.plan.recheckTask.status === '待上门' && !!planRe.plan.recheckTask.appointment_id,
+  `任务#${planRe.plan?.recheckTask?.id} 预约#${planRe.plan?.recheckTask?.appointment_id}`)
+const liTaskId = planRe.plan.recheckTask.id
+
+const nurses = await call(nurse.token, 'GET', '/api/nurses')
+const nurse2Id = nurses.nurses.find((n) => n.name === '刘洋').id
+const tomorrow = new Date(Date.now() + 86400000).toISOString().slice(0, 16)
+const assigned = await call(nurse.token, 'POST', `/api/recheck-tasks/${liTaskId}/assign`,
+  { nurseId: nurse2Id, deviceCode: 'JM-TEST-0088', scheduledTime: tomorrow })
+ok('复测任务指派护士与设备',
+  assigned.task?.nurse?.name === '刘洋' && assigned.task.device_code === 'JM-TEST-0088')
+
+const reminded = await call(nurse.token, 'POST', `/api/recheck-tasks/${liTaskId}/remind`, {})
+ok('复测前提醒准备喂养/排便记录', reminded.task?.prepare_reminded === 1 && reminded.task.prepare_note.includes('排便'))
+
+const rs1 = await call(family.token, 'POST', `/api/recheck-tasks/${liTaskId}/reschedule`,
+  { scheduledTime: tomorrow, reason: '验证脚本第一次改约' })
+ok('第一次改约不升级', rs1.task.status === '已改约' && rs1.escalated === false && rs1.task.reschedule_count === 1)
+const rs2 = await call(family.token, 'POST', `/api/recheck-tasks/${liTaskId}/reschedule`,
+  { scheduledTime: tomorrow, reason: '验证脚本第二次改约' })
+ok('第二次改约自动升级社区医生', rs2.escalated === true && rs2.task.status === '已升级' && rs2.task.reschedule_count === 2)
+const escList = await call(doctor.token, 'GET', '/api/recheck-tasks?status=escalated')
+ok('医生升级列表含该任务', escList.tasks.some((t) => t.id === liTaskId))
+const intervene = await call(doctor.token, 'POST', `/api/recheck-tasks/${liTaskId}/doctor-action`,
+  { action: 'direct_visit', note: '验证脚本：建议直接就诊测胆红素' })
+ok('医生处置（建议直接就诊）', intervene.task?.doctor_action === 'direct_visit' && intervene.task.doctor?.name === '张启明')
+
+// 家属最终选择当天去儿科 → 复测任务取消、生成转诊事项
+const planClinic = await call(family.token, 'POST', '/api/jaundice/plan', { visitId: liVisitId, choice: 'clinic' })
+ok('改选当天去儿科并取消复测任务',
+  planClinic.plan?.choice === 'clinic' && planClinic.plan.recheckTask?.status === '已取消')
+
+// 11 复测升高 → 转诊单自动带入前一天记录与变化趋势（王乐乐）
+const taskRows = await call(nurse.token, 'GET', '/api/recheck-tasks')
+const wlTask = taskRows.tasks.find((t) => t.archive?.baby_name === '王乐乐' && t.status === '待上门')
+ok('种子复测任务（护士刘洋+设备+准备提醒）',
+  wlTask && wlTask.nurse?.name === '刘洋' && wlTask.device_code === 'JM-103-0217' && wlTask.prepare_reminded === 1,
+  wlTask ? `任务#${wlTask.id}` : '缺失')
+const reVisit = await call(nurse.token, 'POST', '/api/visits', {
+  archive_id: wlTask.archive_id, appointment_id: wlTask.appointment_id,
+  visit_time: new Date().toISOString().slice(0, 16),
+  weight: 2750, bilirubin: 280, bilirubin_site: '额头', device_code: 'JM-103-0217',
+  stool_count: 3, stool_color: '黄色', urine_count: 7, feeding_freq: 9,
+})
+ok('复测访视提交完成任务', !!reVisit.visit?.id)
+const refs = await call(nurse.token, 'GET', '/api/referrals')
+const ref = refs.referrals.find((r) => r.archive_id === wlTask.archive_id)
+ok('复测升高自动生成转诊单',
+  ref && ref.bilirubin_prev === 262 && ref.bilirubin_current === 280 && ref.delta === 18
+  && ref.trend_note.includes('升高') && ref.baseline_visit_id != null,
+  ref ? `${ref.bilirubin_prev}→${ref.bilirubin_current}（+${ref.delta}）` : '无转诊单')
+ok('转诊单带入前一天记录（部位/喂养/排便/设备/护士）',
+  ref && ref.prev_site === '额头' && ref.current_site === '额头' && ref.prev_feeding === 8 && ref.current_feeding === 9
+  && ref.prev_device === 'JM-103-0217' && ref.prev_stool_color === '黄色')
+const refClose = await call(nurse.token, 'POST', `/api/referrals/${ref.id}/feedback`,
+  { feedback: '验证脚本：已就诊，门诊复测后安排光疗', close: true })
+ok('转诊单就诊反馈闭环', refClose.referral?.status === '已闭环')
+
+const family2 = await login('family2', 'family123')
+const fam2 = await call(family2.token, 'GET', '/api/family/overview')
+ok('家属端可见含趋势的转诊单', (fam2.referrals || []).some((r) => r.delta === 18 && r.status === '已闭环'))
+
+// 12 权限
 const deny = await fetch(`${BASE}/api/dashboard`, { headers: { Authorization: `Bearer ${family.token}` } })
 ok('家属无权访问护士工作台', deny.status === 403)
 

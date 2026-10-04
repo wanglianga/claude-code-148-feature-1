@@ -21,10 +21,14 @@ export default function FamilyVisits() {
           </div>
           <div className="grid2 mt8 small">
             <div>⚖️ 体重 {v.weight ?? '-'} g</div>
-            <div>🟡 黄疸 {v.bilirubin ?? '-'} µmol/L</div>
+            <div>🟡 黄疸 {v.bilirubin ?? '-'} µmol/L（{v.bilirubin_site}）</div>
+            <div>🔬 设备 {v.device_code || '未登记'}</div>
             <div>喂养 {v.feeding_freq} 次/日</div>
             <div>大便 {v.stool_count} 次（{v.stool_color}）</div>
           </div>
+          {v.doctor_advice && (
+            <div className="alert-box info mt8" style={{ marginBottom: 0 }}>🩺 <b>医生建议：</b>{v.doctor_advice}</div>
+          )}
           {v.flags.length > 0 && (
             <div className="mt8">
               {v.flags.map((f, i) => <Badge key={i} color="amber"> {f} </Badge>)}

@@ -67,6 +67,8 @@ CREATE TABLE IF NOT EXISTS visits (
   weight REAL,                         -- 婴儿体重 g
   bilirubin REAL,                      -- 经皮黄疸值 µmol/L
   bilirubin_site TEXT DEFAULT '额头',
+  device_code TEXT DEFAULT '',         -- 经皮胆红素仪设备编号
+  doctor_advice TEXT DEFAULT '',       -- 医生建议（护士转述/医生录入，家属可见）
   cord TEXT DEFAULT '干燥',            -- 脐带情况
   stool_count INTEGER DEFAULT 0,
   stool_color TEXT DEFAULT '黄色',
@@ -106,6 +108,58 @@ CREATE TABLE IF NOT EXISTS followups (
   closed_at TEXT,
   closed_by TEXT,
   close_note TEXT DEFAULT ''
+);
+
+CREATE TABLE IF NOT EXISTS jaundice_plans (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id),
+  visit_id INTEGER NOT NULL REFERENCES visits(id),   -- 触发计划的临界值访视
+  choice TEXT NOT NULL DEFAULT 'observe',           -- recheck 次日复测 / clinic 当天去儿科 / observe 在家观察
+  risk_notice TEXT DEFAULT '',                      -- 风险告知内容（观察时生成，家属需确认）
+  risk_acknowledged INTEGER DEFAULT 0,              -- 家属已知晓风险
+  acknowledged_at TEXT,
+  due_date TEXT,                                    -- 复测/就诊建议日期
+  recheck_task_id INTEGER,                          -- 选择次日复测时生成的复测任务
+  created_by TEXT DEFAULT '家属',
+  created_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS recheck_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id),
+  plan_id INTEGER REFERENCES jaundice_plans(id),
+  visit_id INTEGER REFERENCES visits(id),           -- 触发任务的临界值访视
+  appointment_id INTEGER REFERENCES appointments(id),
+  nurse_id INTEGER REFERENCES users(id),            -- 由哪名护士上门
+  device_code TEXT DEFAULT '',                      -- 携带哪台设备
+  scheduled_time TEXT NOT NULL,                     -- 复测时间
+  prepare_reminded INTEGER DEFAULT 0,               -- 是否已提醒家属准备喂养/排便记录
+  prepare_note TEXT DEFAULT '',                     -- 提醒内容快照
+  reschedule_count INTEGER DEFAULT 0,               -- 家属改约次数（第 2 次升级社区医生）
+  status TEXT NOT NULL DEFAULT '待上门',            -- 待上门/已改约/已升级/已完成/已取消
+  escalation_note TEXT DEFAULT '',                  -- 升级说明
+  doctor_action TEXT DEFAULT '',                    -- 医生处置 phone_call 电话干预 / direct_visit 建议直接就诊
+  doctor_note TEXT DEFAULT '',
+  doctor_id INTEGER REFERENCES users(id),
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+CREATE TABLE IF NOT EXISTS referrals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id),
+  task_id INTEGER REFERENCES recheck_tasks(id),     -- 复测升高触发时关联任务
+  current_visit_id INTEGER NOT NULL REFERENCES visits(id),  -- 本次（升高）访视
+  baseline_visit_id INTEGER REFERENCES visits(id),          -- 前一天临界值访视（带入转诊单）
+  bilirubin_prev REAL,                              -- 前一天黄疸值
+  bilirubin_current REAL,                           -- 本次黄疸值
+  delta REAL,                                       -- 变化幅度
+  trend_note TEXT DEFAULT '',                       -- 变化趋势说明
+  status TEXT NOT NULL DEFAULT '待就诊',            -- 待就诊/已就诊/已闭环
+  hospital_feedback TEXT DEFAULT '',                -- 医院反馈
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  closed_at TEXT,
+  closed_by TEXT
 );
 
 CREATE TABLE IF NOT EXISTS documents (
@@ -152,7 +206,20 @@ CREATE INDEX IF NOT EXISTS idx_appt_status ON appointments(status);
 CREATE INDEX IF NOT EXISTS idx_visit_archive ON visits(archive_id);
 CREATE INDEX IF NOT EXISTS idx_followup_status ON followups(status);
 CREATE INDEX IF NOT EXISTS idx_events_archive ON events(archive_id);
+CREATE INDEX IF NOT EXISTS idx_plan_archive ON jaundice_plans(archive_id);
+CREATE INDEX IF NOT EXISTS idx_task_archive ON recheck_tasks(archive_id);
+CREATE INDEX IF NOT EXISTS idx_task_status ON recheck_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_referral_archive ON referrals(archive_id);
 `)
+
+// 旧库迁移：visits 新增设备编号 / 医生建议列（CREATE TABLE IF NOT EXISTS 不会补列）
+for (const [table, col, ddl] of [
+  ['visits', 'device_code', "ALTER TABLE visits ADD COLUMN device_code TEXT DEFAULT ''"],
+  ['visits', 'doctor_advice', "ALTER TABLE visits ADD COLUMN doctor_advice TEXT DEFAULT ''"],
+]) {
+  const exists = db.prepare(`SELECT COUNT(*) c FROM pragma_table_info(?) WHERE name=?`).get(table, col).c > 0
+  if (!exists) db.exec(ddl)
+}
 
 export function addEvent(archiveId, kind, title, detail = '', actor = '') {
   db.prepare('INSERT INTO events (archive_id, kind, title, detail, actor) VALUES (?,?,?,?,?)')

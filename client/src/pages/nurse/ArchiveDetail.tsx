@@ -5,6 +5,7 @@ import { api } from '../../api'
 import type { ArchiveDetail as Detail, Followup, Visit } from '../../types'
 import { AgeText, APPT_STATUS_COLOR, Badge, Empty, FOLLOWUP_TYPE_COLOR, Modal, RiskBadge, fmtTime, toast } from '../../components/ui'
 import { useAuth } from '../../store/auth'
+import JaundicePanel from './JaundicePanel'
 
 const TABS = ['概览', '访视记录', '复查转诊', '材料咨询', '时间线']
 
@@ -53,7 +54,12 @@ export default function ArchiveDetail() {
 
       {tab === '概览' && <OverviewTab d={data} />}
       {tab === '访视记录' && <VisitsTab visits={data.visits} />}
-      {tab === '复查转诊' && <FollowupsTab followups={data.followups} onChanged={load} />}
+      {tab === '复查转诊' && (
+        <div>
+          <JaundicePanel d={data} reload={load} />
+          <FollowupsTab followups={data.followups} onChanged={load} doctor={user?.role === 'doctor'} />
+        </div>
+      )}
       {tab === '材料咨询' && <DocsConsultsTab d={data} onChanged={load} />}
       {tab === '时间线' && (
         <div className="card">

@@ -1,14 +1,18 @@
 // 家属端首页：护理建议、复查时间、风险说明
-import { useEffect, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { api } from '../../api'
 import type { FamilyOverview } from '../../types'
 import { AgeText, Badge, Empty, RiskBadge, fmtTime } from '../../components/ui'
+import JaundiceFlow from './JaundiceFlow'
 
 export default function FamilyHome() {
   const [d, setD] = useState<FamilyOverview | null>(null)
   const [err, setErr] = useState('')
-  useEffect(() => { api.get<FamilyOverview>('/api/family/overview').then(setD).catch((e) => setErr(e.message)) }, [])
+  const load = useCallback(() => {
+    api.get<FamilyOverview>('/api/family/overview').then(setD).catch((e) => setErr(e.message))
+  }, [])
+  useEffect(load, [])
 
   if (err) return <div className="alert-box danger">{err}</div>
   if (!d) return <Empty text="加载中…" icon="⏳" />
@@ -16,18 +20,23 @@ export default function FamilyHome() {
   const last = d.visits[0]
   const recheck = d.followups.find((f) => f.type === '复查')
   const referral = d.followups.find((f) => f.type === '转诊')
+  // 临界值流程已自带转诊单/复测任务卡时，不再重复显示通用提醒
+  const jaundiceReferral = (d.referrals || []).some((r) => r.status !== '已闭环')
+  const jaundiceRecheck = !!d.jaundicePlan?.recheckTask && d.jaundicePlan.choice === 'recheck'
 
   return (
     <div>
       <div className="page-title">{a.baby_name} 的护理档案</div>
       <div className="page-sub">妈妈 {a.mother_name} · <AgeText birthDate={a.birth_date} /> · 出生体重 {a.birth_weight}g</div>
 
-      {referral && (
+      <JaundiceFlow d={d} reload={load} />
+
+      {referral && !jaundiceReferral && (
         <div className="alert-box danger">
           <b>转诊提醒：</b>{referral.detail || referral.title}。请尽快带宝宝到儿科就诊，就诊后请告知社区护士。
         </div>
       )}
-      {recheck && (
+      {recheck && !jaundiceRecheck && (
         <div className="alert-box warn">
           <b>复查提醒：</b>建议 {recheck.due_date || '近期'} 前复查黄疸/体重。
           {d.nextAppointment && <>护士将于 <b>{fmtTime(d.nextAppointment.scheduled_time)}</b> 上门。</>}
