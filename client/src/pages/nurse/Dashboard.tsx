@@ -25,10 +25,20 @@ export default function Dashboard() {
       <div className="page-title">工作台</div>
       <div className="grid4 mb12">
         <Stat num={s.unvisited} label="未访视家庭" color="amber" onClick={() => nav('/nurse/appointments')} />
-        <Stat num={s.jaundiceAlerts} label="异常黄疸/复查" color="coral" onClick={() => nav('/nurse/archives?filter=jaundice')} />
+        <Stat num={s.jaundiceAlerts} label="异常黄疸/复查" color="coral" onClick={() => nav('/nurse/rechecks')} />
         <Stat num={s.maternalRisks} label="产妇风险" color="red" onClick={() => nav('/nurse/archives?filter=maternal')} />
         <Stat num={s.openFollowups} label="待闭环事项" color="teal" onClick={() => nav('/nurse/followups')} />
       </div>
+
+      {(s.recheckPending > 0 || s.recheckEscalated > 0 || s.referralsPending > 0) && (
+        <div className="card" style={{ padding: 10 }}>
+          <div className="row wrap">
+            <Link to="/nurse/rechecks" className="btn teal sm">🟡 临界值复测 {s.recheckPending} 项待处理</Link>
+            {s.recheckEscalated > 0 && <Link to="/doctor/rechecks" className="btn danger sm">⬆ 再次改约升级 {s.recheckEscalated} 项（社区医生判断）</Link>}
+            {s.referralsPending > 0 && <Link to="/nurse/rechecks" className="btn ghost sm">🏥 待就诊转诊单 {s.referralsPending}</Link>}
+          </div>
+        </div>
+      )}
 
       {drafts.length > 0 && (
         <div className="alert-box warn row between">

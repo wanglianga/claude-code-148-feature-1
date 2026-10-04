@@ -1,8 +1,12 @@
-// 种子数据：8 个母婴档案覆盖全部业务场景（未访视/异常黄疸/体重下降/产妇情绪/
-// 未开门/设备故障/线上咨询/已闭环），日期相对“今天”生成，任何时候演示都有当日数据
+// 种子数据：11 个母婴档案覆盖全部业务场景（未访视/异常黄疸/体重下降/产妇情绪/
+// 未开门/设备故障/线上咨询/已闭环/临界值复查四态：待选择、待复测、再次改约升级、复测升高转诊单），
+// 日期相对“今天”生成，任何时候演示都有当日数据
 import { createHash } from 'node:crypto'
 import db, { addEvent } from './db.js'
-import { createVisit } from './service.js'
+import {
+  createVisit, familyChooseRecheck, assignRecheckTask, markRecheckReminder,
+  escalateRecheckOnReschedule,
+} from './service.js'
 
 const hash = (s) => createHash('sha256').update('nbv:' + s).digest('hex')
 const day = 86400000
@@ -35,7 +39,7 @@ export function seed() {
   // 1 李婷/李安安：今天待初访（家属账号 family）
   const a1 = arch(fam1, '李婷', '李安安', '女', -5, 3200, '顺产', '母乳喂养', '中', '会阴切口愈合良好',
     '幸福里小区 3 栋 2 单元 502', '李婷丈夫 陈先生', '13900000001', -3, '良好', '母亲 O 型血，注意观察黄疸')
-  // 2 王雪/王乐乐：D-2 访视黄疸接近阈值，今天复查（家属账号 family2）
+  // 2 王雪/王乐乐：D-1 访视黄疸接近阈值，今天待家属选择（次日复测/当天就诊/观察）（家属账号 family2）
   const a2 = arch(fam2, '王雪', '王乐乐', '男', -8, 2800, '剖宫产', '混合喂养', '高', '剖宫产切口愈合良好',
     '康宁花园 7 栋 1 单元 301', '王雪母亲', '13900000002', -6, '一般', '母亲 O 型、父亲 B 型，ABO 溶血风险')
   // 3 陈静/陈小米：已访视正常，闭环样例
@@ -50,12 +54,21 @@ export function seed() {
   // 6 周洁/周小贝：访视正常，家属发起线上咨询待回复
   const a6 = arch(null, '周洁', '周小贝', '男', -15, 3300, '顺产', '母乳喂养', '低', '会阴切口愈合良好',
     '康宁花园 2 栋 402', '周洁', '13900000006', -13, '良好', '')
-  // 7 吴倩/吴小满：体重下降>10%+黄疸接近阈值+设备故障 → 转诊儿科待闭环
+  // 7 吴倩/吴小满：体重下降>10%+黄疸达阈值+设备故障 → 转诊儿科待闭环
   const a7 = arch(null, '吴倩', '吴小满', '女', -11, 3420, '顺产', '母乳喂养', '高', '会阴切口愈合良好',
     '朝阳社区 4 栋 2 单元 501', '吴倩丈夫', '13900000007', -9, '一般', '访视当日经皮胆红素仪故障')
   // 8 郑倩/郑小星：明天初访
   const a8 = arch(null, '郑倩', '郑小星', '男', -3, 3900, '剖宫产', '混合喂养', '中', '剖宫产切口愈合良好',
     '滨河小区 1 栋 101', '郑倩', '13900000008', -1, '良好', '巨大儿，注意喂养与血糖观察')
+  // 9 林芳/林小夏：昨日临界值访视，家属选次日复测，已安排今日护士+设备上门
+  const a9 = arch(null, '林芳', '林小夏', '女', -9, 3100, '顺产', '母乳喂养', '中', '会阴切口愈合良好',
+    '幸福里小区 8 栋 1 单元 403', '林芳', '13900000009', -7, '良好', '')
+  // 10 周敏/周小川：临界值复测被家属再次改约，已升级社区医生
+  const a10 = arch(null, '周敏', '周小川', '男', -7, 3300, '顺产', '混合喂养', '高', '会阴切口愈合良好',
+    '康宁花园 3 栋 502', '周敏丈夫', '13900000010', -5, '一般', '家属白天常不在家')
+  // 11 何静/何小禾：今晨复测黄疸较昨日升高，已生成带前日记录的转诊单
+  const a11 = arch(null, '何静', '何小禾', '男', -6, 3050, '顺产', '母乳喂养', '高', '会阴切口愈合良好',
+    '朝阳社区 9 栋 3 单元 202', '何静', '13900000011', -4, '一般', 'ABO 溶血风险')
 
   const insAppt = db.prepare(`INSERT INTO appointments (archive_id, nurse_id, type, scheduled_time, status, reason)
                               VALUES (?,?,?,?,?,?)`)
@@ -69,7 +82,7 @@ export function seed() {
   const appt4 = insAppt.run(a4, nurse, '初访', at(-1, '09:00'), '已完成', '').lastInsertRowid
   const appt6 = insAppt.run(a6, nurse2, '初访', at(-5, '14:00'), '已完成', '').lastInsertRowid
   const appt7 = insAppt.run(a7, nurse, '初访', at(-3, '10:30'), '已完成', '').lastInsertRowid
-  const appt2 = insAppt.run(a2, nurse, '初访', at(-2, '09:30'), '已完成', '').lastInsertRowid
+  const appt2 = insAppt.run(a2, nurse, '初访', at(-1, '09:30'), '已完成', '').lastInsertRowid
 
   // —— 访视记录（走统一 createVisit，风险引擎自动生成复查/转诊/指导/电话随访） ——
   const nurseRow = db.prepare('SELECT * FROM users WHERE id=?').get(nurse)
@@ -88,13 +101,60 @@ export function seed() {
     feeding_freq: 9, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '良好' }, nurse2Row)
 
   createVisit({ appointment_id: appt7, archive_id: a7, visit_time: iso(-3, '10:50'), weight: 3050,
-    bilirubin: 289, bilirubin_site: '额头', cord: '渗液', stool_count: 2, stool_color: '黄绿色', urine_count: 5,
+    bilirubin: 289, bilirubin_site: '额头', device_no: 'JM-103-007（故障）',
+    doctor_advice: '已电话报告张医生：体重下降超 10% 且黄疸接近阈值，设备故障为手工读数，建议立即转诊儿科评估',
+    cord: '渗液', stool_count: 2, stool_color: '黄绿色', urine_count: 5,
     feeding_freq: 7, spit_up: '频繁', sleep: '嗜睡', breast: '乳头皲裂', mood: '焦虑', care_ability: '一般',
     device_issue: 1 }, nurseRow)
 
-  createVisit({ appointment_id: appt2, archive_id: a2, visit_time: iso(-2, '09:40'), weight: 2700,
-    bilirubin: 262, bilirubin_site: '额头', cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
+  createVisit({ appointment_id: appt2, archive_id: a2, visit_time: iso(-1, '09:40'), weight: 2700,
+    bilirubin: 262, bilirubin_site: '额头', device_no: 'JM-103-002',
+    doctor_advice: '已电话报告张医生，嘱 24 小时内复测胆红素；若黄染加重、嗜睡拒奶立即就诊，期间加强喂养',
+    cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
     feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurseRow)
+
+  // —— 场景9：林芳/林小夏 临界值 → 家属选次日复测 → 已安排护士+设备+准备提醒（今日待复测） ——
+  const v9 = createVisit({ archive_id: a9, visit_time: iso(-1, '15:20'), weight: 3050,
+    bilirubin: 268, bilirubin_site: '额头', device_no: 'JM-103-009',
+    doctor_advice: '张医生电话嘱：24 小时内复测胆红素，加强喂养，观察黄染范围',
+    cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 7,
+    feeding_freq: 9, spit_up: '无', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '良好' }, nurse2Row)
+  familyChooseRecheck(v9.recheckTask.id, '复测', '林芳家属')
+  const a9assigned = assignRecheckTask(v9.recheckTask.id,
+    { nurseId: nurse2, deviceNo: 'JM-103-009', scheduledTime: at(0, '09:30') }, '刘洋')
+  markRecheckReminder(a9assigned.task.id, '刘洋')
+
+  // —— 场景10：周敏/周小川 临界值 → 复测 → 家属再次改约 → 已升级社区医生 ——
+  const v10 = createVisit({ archive_id: a10, visit_time: iso(-2, '10:10'), weight: 3250,
+    bilirubin: 264, bilirubin_site: '胸口', device_no: 'JM-103-010',
+    doctor_advice: '张医生嘱：次日复测，密切观察，必要时就诊',
+    cord: '干燥', stool_count: 3, stool_color: '黄绿色', urine_count: 6,
+    feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '焦虑', care_ability: '一般' }, nurseRow)
+  familyChooseRecheck(v10.recheckTask.id, '复测', '周敏家属')
+  const a10assigned = assignRecheckTask(v10.recheckTask.id,
+    { nurseId: nurse, deviceNo: 'JM-103-010', scheduledTime: at(0, '10:00') }, '王芳')
+  db.prepare(`UPDATE appointments SET scheduled_time=?, reason=? WHERE id=?`)
+    .run(at(0, '10:00'), '家属第一次改约', a10assigned.task.appointment_id)
+  addEvent(a10, '改约', `预约改期至 ${at(0, '10:00')}`, '家属临时有事', '周敏家属')
+  // 再次改约 → 升级社区医生
+  escalateRecheckOnReschedule(a10assigned.task.appointment_id, '家属再次改约，称白天无人在家', '周敏家属')
+
+  // —— 场景11：何静/何小禾 临界值 → 次日复测 → 今晨黄疸升高 → 自动生成带前日记录的转诊单 ——
+  const v11 = createVisit({ archive_id: a11, visit_time: iso(-1, '16:00'), weight: 3000,
+    bilirubin: 260, bilirubin_site: '额头', device_no: 'JM-103-011',
+    doctor_advice: '张医生嘱：次晨复测胆红素，若上升立即就诊',
+    cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
+    feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurseRow)
+  familyChooseRecheck(v11.recheckTask.id, '复测', '何静家属')
+  const a11assigned = assignRecheckTask(v11.recheckTask.id,
+    { nurseId: nurse, deviceNo: 'JM-103-011', scheduledTime: at(0, '08:30') }, '王芳')
+  const v11re = createVisit({ appointment_id: a11assigned.task.appointment_id, archive_id: a11,
+    visit_time: iso(0, '08:50'), weight: 2980,
+    bilirubin: 295, bilirubin_site: '额头', device_no: 'JM-103-011',
+    doctor_advice: '复测胆红素升高达阈值，张医生指示立即转诊儿科',
+    cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
+    feeding_freq: 8, spit_up: '偶尔', sleep: '正常', breast: '正常', mood: '平稳', care_ability: '一般' }, nurseRow)
+  if (!v11re.referral) throw new Error('种子：场景11 应生成转诊单')
 
   // —— 未开门事件 + 再次预约事项 ——
   addEvent(a5, '未开门', '上门访视家属未开门', '敲门无人应答，电话未接通，已留联系卡', '王芳')

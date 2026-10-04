@@ -157,3 +157,14 @@ button { font-family: inherit; }
 
 .section-gap { height: 4px; }
 .advice-pre { white-space: pre-wrap; font-size: 13.5px; background: #fffaf5; border: 1px dashed #eccfae; border-radius: 10px; padding: 10px 12px; }
+
+/* 黄疸临界值复查 */
+.card-inner-box { background: #fffaf5; border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; }
+.recheck-choices { display: flex; flex-direction: column; gap: 8px; }
+.risk-notice { white-space: pre-wrap; font-size: 13px; background: var(--amber-soft); border: 1px solid #f3d9ae;
+  color: #8a5a12; border-radius: 10px; padding: 10px 12px; margin: 0; font-family: inherit; }
+.trend-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.trend-table th, .trend-table td { border: 1px solid var(--line); padding: 7px 9px; text-align: left; vertical-align: top; }
+.trend-table th { background: #faf2ec; color: #5c554e; font-weight: 600; white-space: nowrap; }
+.trend-table td.trend-up { color: var(--red); font-weight: 700; }
+.escalated-banner { background: var(--red-soft); border: 1px solid #efc3c3; color: #8f2b2b; border-radius: 12px; padding: 11px 13px; font-size: 13.5px; margin-bottom: 12px; }

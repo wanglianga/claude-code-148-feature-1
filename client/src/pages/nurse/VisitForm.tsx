@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useNavigate, useSearchParams } from 'react-router-dom'
 import { api } from '../../api'
-import type { Archive, ArchiveDetail, VisitPayload } from '../../types'
+import type { Archive, ArchiveDetail, RecheckTask, VisitPayload } from '../../types'
 import { assessVisit } from '../../risk'
 import { Badge, Empty, RiskBadge, fmtTime, toast } from '../../components/ui'
 import { isOfflineNow, useNet } from '../../store/net'
@@ -19,6 +19,7 @@ export default function VisitForm() {
   const archiveId = Number(sp.get('archiveId'))
   const appointmentId = sp.get('appointmentId') ? Number(sp.get('appointmentId')) : null
   const [archive, setArchive] = useState<Archive | null>(null)
+  const [recheckTask, setRecheckTask] = useState<RecheckTask | null>(null)
   const [err, setErr] = useState('')
   const [busy, setBusy] = useState(false)
   const nav = useNavigate()
@@ -33,7 +34,7 @@ export default function VisitForm() {
     cord: '干燥', stool_count: 3, stool_color: '黄色', urine_count: 6,
     feeding_type: '', feeding_freq: 8, spit_up: '无', sleep: '正常',
     breast: '正常', mood: '平稳', wound_check: '', care_ability: '',
-    device_issue: false, photos: [], advice: '',
+    device_issue: false, device_no: '', doctor_advice: '', photos: [], advice: '',
   })
   const [adviceTouched, setAdviceTouched] = useState(false)
   const set = (k: keyof VisitPayload, v: any) => setF((s) => ({ ...s, [k]: v }))
@@ -42,7 +43,22 @@ export default function VisitForm() {
     api.get<ArchiveDetail>(`/api/archives/${archiveId}`)
       .then((d) => {
         setArchive(d.archive)
-        setF((s) => ({ ...s, feeding_type: s.feeding_type || d.archive.feeding_type, wound_check: s.wound_check || d.archive.maternal_wound, care_ability: s.care_ability || d.archive.care_ability }))
+        // 若本次上门对应一项黄疸复测任务：带入前一天读数与设备，便于趋势对比
+        const task = d.recheckTasks.find((t) => t.appointment_id === appointmentId && ['待复测', '已升级'].includes(t.status))
+          || d.recheckTasks.find((t) => ['待复测', '已升级'].includes(t.status))
+        if (task) {
+          setRecheckTask(task)
+          setF((s) => ({
+            ...s,
+            feeding_type: s.feeding_type || d.archive.feeding_type,
+            wound_check: s.wound_check || d.archive.maternal_wound,
+            care_ability: s.care_ability || d.archive.care_ability,
+            device_no: s.device_no || task.device_no || '',
+            bilirubin_site: task.source_visit?.bilirubin_site || s.bilirubin_site,
+          }))
+        } else {
+          setF((s) => ({ ...s, feeding_type: s.feeding_type || d.archive.feeding_type, wound_check: s.wound_check || d.archive.maternal_wound, care_ability: s.care_ability || d.archive.care_ability }))
+        }
       })
       .catch((e) => setErr(`档案加载失败：${e.message}（离线状态下请回到社区网络环境再打开本页，或先在同步页处理草稿）`))
   }, [archiveId])
@@ -82,6 +98,15 @@ export default function VisitForm() {
 
   async function submit() {
     if (!f.weight && !f.bilirubin) return toast('请至少填写体重或黄疸值')
+    // 临界值四项必录：测量部位、设备编号、喂养情况、医生建议
+    if (assess?.nearJaundice) {
+      const missing: string[] = []
+      if (!f.bilirubin_site) missing.push('测量部位')
+      if (!String(f.device_no || '').trim()) missing.push('设备编号')
+      if (!f.feeding_type || !f.feeding_freq) missing.push('喂养情况')
+      if (!String(f.doctor_advice || '').trim()) missing.push('医生建议')
+      if (missing.length) return toast(`黄疸接近转诊阈值，请补录：${missing.join('、')}`)
+    }
     setBusy(true)
     try {
       if (isOfflineNow()) {
@@ -129,6 +154,18 @@ export default function VisitForm() {
 
       {offline && <div className="alert-box warn">📵 离线模式：提交将保存为本地草稿，不会上传服务器</div>}
 
+      {recheckTask && recheckTask.source_visit && (
+        <div className="alert-box info">
+          <b>🔁 本次为黄疸临界值次日复测</b>
+          <div className="small mt8">
+            前日（{fmtTime(recheckTask.source_visit.visit_time)}）黄疸 <b>{recheckTask.source_visit.bilirubin ?? '-'}</b> µmol/L
+            （{recheckTask.source_visit.bilirubin_site}），设备 {recheckTask.source_visit.device_no || '未记录'}，
+            喂养 {recheckTask.source_visit.feeding_freq} 次/日。请使用本次任务设备复测，提交后系统自动比对变化趋势。
+          </div>
+          {recheckTask.assign_nurse_name && <div className="small">上门护士：{recheckTask.assign_nurse_name} · 复测设备：{recheckTask.device_no}</div>}
+        </div>
+      )}
+
       <div className="card">
         <div className="card-title"><span className="dot" />婴儿测量</div>
         <div className="grid2">
@@ -155,8 +192,13 @@ export default function VisitForm() {
             )}
           </div>
           <div className="field">
-            <label>测量部位</label>
+            <label>测量部位{assess?.nearJaundice ? ' *' : ''}</label>
             <Seg options={['额头', '胸口', '大腿']} value={f.bilirubin_site!} onChange={(v) => set('bilirubin_site', v)} />
+          </div>
+          <div className="field">
+            <label>测量设备编号{assess?.nearJaundice ? ' *' : ''}</label>
+            <input placeholder="如 JDD-经皮胆红素仪编号" value={f.device_no ?? ''} onChange={(e) => set('device_no', e.target.value)} />
+            <div className="hint">经皮胆红素仪机身编号，复测建议使用同一台设备</div>
           </div>
         </div>
         <label className="row small" style={{ gap: 6, cursor: 'pointer' }}>
@@ -188,7 +230,7 @@ export default function VisitForm() {
       </div>
 
       <div className="card">
-        <div className="card-title"><span className="dot" style={{ background: 'var(--amber)' }} />喂养与一般状态</div>
+        <div className="card-title"><span className="dot" style={{ background: 'var(--amber)' }} />喂养与一般状态{assess?.nearJaundice ? '（临界值必录 *）' : ''}</div>
         <div className="field">
           <label>喂养方式</label>
           <Seg options={['母乳喂养', '配方奶喂养', '混合喂养']} value={f.feeding_type!} onChange={(v) => set('feeding_type', v)} />
@@ -250,6 +292,18 @@ export default function VisitForm() {
             {assess.needLactation ? <Badge color="teal">安排母乳指导</Badge> : null}
             {assess.needPhone ? <Badge color="amber">电话随访</Badge> : null}
             {!assess.needReferral && !assess.needRecheck && !assess.needLactation && !assess.needPhone && <Badge color="green">常规随访即可</Badge>}
+          </div>
+          {assess.nearJaundice && (
+            <div className="alert-box warn" style={{ marginBottom: 10 }}>
+              <b>黄疸接近转诊阈值（临界值）</b>
+              <div className="small mt8">提交后将发起临界值复查：需记录<b>测量部位、设备编号、喂养情况、医生建议</b>，并由家属选择
+                <b>次日复测 / 当天去儿科 / 居家观察</b>；复测黄疸升高将自动生成带前日记录的转诊单。</div>
+            </div>
+          )}
+          <div className="field">
+            <label>医生建议{assess.nearJaundice ? ' *' : ''}（现场联系/转达社区医生的医嘱）</label>
+            <textarea rows={2} value={f.doctor_advice ?? ''} placeholder="如：已电话报告张医生，嘱 24 小时内复测胆红素，加强喂养，出现嗜睡拒奶立即就诊"
+              onChange={(e) => set('doctor_advice', e.target.value)} />
           </div>
           <div className="field" style={{ marginBottom: 0 }}>
             <label>护理建议（自动生成，可修改；家属端可见）</label>

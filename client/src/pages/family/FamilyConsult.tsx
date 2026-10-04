@@ -61,6 +61,11 @@ export default function FamilyConsult() {
           <div key={a.id} className="row between" style={{ padding: '7px 0', borderBottom: '1px dashed var(--line)' }}>
             <div>
               <div className="strong small">{a.type} · {fmtTime(a.scheduled_time)}</div>
+              {a.recheck_task_id ? (
+                <div className="small" style={{ color: 'var(--primary)' }}>
+                  黄疸临界值复测{a.assign_nurse_name ? ` · 上门护士 ${a.assign_nurse_name}` : ''}{a.device_no ? ` · 设备 ${a.device_no}` : ''}
+                </div>
+              ) : null}
               {a.reason && <div className="small muted">{a.reason}</div>}
             </div>
             <div className="row">
@@ -72,20 +77,25 @@ export default function FamilyConsult() {
       </div>
 
       {rescheduleId && <Reschedule apptId={rescheduleId} onClose={() => setRescheduleId(null)}
-        onDone={() => { setRescheduleId(null); load(); toast('改约成功，护士会按新时间上门') }} />}
+        onDone={(escalated) => {
+          setRescheduleId(null); load()
+          toast(escalated ? '改约成功：复测已再次改约，任务已升级社区医生判断是否电话干预或建议就诊' : '改约成功，护士会按新时间上门')
+        }} />}
     </div>
   )
 }
 
-function Reschedule({ apptId, onClose, onDone }: { apptId: number; onClose: () => void; onDone: () => void }) {
+function Reschedule({ apptId, onClose, onDone }: { apptId: number; onClose: () => void; onDone: (escalated: boolean) => void }) {
   const [time, setTime] = useState('')
   const [reason, setReason] = useState('家里临时有事，申请改期')
   const [busy, setBusy] = useState(false)
   async function ok() {
     if (!time) return toast('请选择新的时间')
     setBusy(true)
-    try { await api.post(`/api/appointments/${apptId}/reschedule`, { scheduledTime: time, reason }); onDone() }
-    catch (e: any) { toast(e.message) } finally { setBusy(false) }
+    try {
+      const r = await api.post<{ escalated: unknown }>(`/api/appointments/${apptId}/reschedule`, { scheduledTime: time, reason })
+      onDone(!!r.escalated)
+    } catch (e: any) { toast(e.message) } finally { setBusy(false) }
   }
   return (
     <Modal title="申请改约" onClose={onClose}>

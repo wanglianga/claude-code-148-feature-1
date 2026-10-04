@@ -18,6 +18,7 @@ export function assessVisit(archive: Pick<Archive, 'birth_date' | 'birth_weight'
   const flags: string[] = []
   const advice: string[] = []
   let level = 0
+  let nearJaundice = false
   const raise = (l: number) => { if (l > level) level = l }
 
   const ageDays = ageDaysOf(archive.birth_date, v.visit_time)
@@ -26,7 +27,7 @@ export function assessVisit(archive: Pick<Archive, 'birth_date' | 'birth_weight'
   if (v.bilirubin != null && !Number.isNaN(v.bilirubin)) {
     const b = Number(v.bilirubin)
     if (b >= threshold) { raise(3); flags.push(`黄疸值 ${b} µmol/L 已达出生第 ${ageDays} 天光疗参考阈值 ${threshold}`); advice.push('黄疸值达到光疗参考阈值，建议立即转诊儿科评估。') }
-    else if (b >= threshold - NEAR_GAP) { raise(2); flags.push(`黄疸值 ${b} µmol/L 接近阈值 ${threshold}（差 ${threshold - b}）`); advice.push('黄疸值接近阈值，建议 24~48 小时内复查胆红素，加强喂养促进排泄。') }
+    else if (b >= threshold - NEAR_GAP) { raise(2); nearJaundice = true; flags.push(`黄疸值 ${b} µmol/L 接近阈值 ${threshold}（差 ${threshold - b}）`); advice.push('黄疸值接近阈值，建议 24~48 小时内复查胆红素，加强喂养促进排泄。') }
     else if (b >= threshold - NEAR_GAP * 2) { raise(1); flags.push(`黄疸值 ${b} µmol/L 偏高，需动态观察`); advice.push('黄疸值偏高，注意复查随访，按需增加喂养次数。') }
   }
   if (archive.jaundice_risk === '高') { raise(Math.max(level, 1)); flags.push('黄疸高风险因素（血型不合/早产/低体重等），按高危儿管理') }
@@ -75,6 +76,7 @@ export function assessVisit(archive: Pick<Archive, 'birth_date' | 'birth_weight'
   return {
     riskLevel: ['低', '中', '高', '危急'][level],
     flags, advice: advice.join('\n'),
+    nearJaundice,
     needRecheck: needRecheck ? 1 : 0, needReferral: needReferral ? 1 : 0,
     needLactation: needLactation ? 1 : 0, needPhone: needPhone ? 1 : 0,
     ageDays, threshold, weightLossPct,

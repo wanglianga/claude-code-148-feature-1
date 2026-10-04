@@ -5,6 +5,8 @@ import { api } from '../../api'
 import type { ArchiveDetail as Detail, Followup, Visit } from '../../types'
 import { AgeText, APPT_STATUS_COLOR, Badge, Empty, FOLLOWUP_TYPE_COLOR, Modal, RiskBadge, fmtTime, toast } from '../../components/ui'
 import { useAuth } from '../../store/auth'
+import { Link } from 'react-router-dom'
+import type { RecheckTask, Referral } from '../../types'
 
 const TABS = ['概览', '访视记录', '复查转诊', '材料咨询', '时间线']
 
@@ -53,7 +55,13 @@ export default function ArchiveDetail() {
 
       {tab === '概览' && <OverviewTab d={data} />}
       {tab === '访视记录' && <VisitsTab visits={data.visits} />}
-      {tab === '复查转诊' && <FollowupsTab followups={data.followups} onChanged={load} />}
+      {tab === '复查转诊' && (
+        <div>
+          {data.recheckTasks.length > 0 && <RecheckSection tasks={data.recheckTasks} doctor={user?.role === 'doctor'} />}
+          {data.referrals.length > 0 && <ReferralSection referrals={data.referrals} />}
+          <FollowupsTab followups={data.followups} onChanged={load} doctor={user?.role === 'doctor'} />
+        </div>
+      )}
       {tab === '材料咨询' && <DocsConsultsTab d={data} onChanged={load} />}
       {tab === '时间线' && (
         <div className="card">
@@ -61,7 +69,7 @@ export default function ArchiveDetail() {
           {data.events.length === 0 && <Empty text="暂无事件" />}
           <div className="timeline">
             {data.events.map((e) => (
-              <div key={e.id} className={`tl-item ${['转诊'].includes(e.kind) ? 'alert' : ['复查', '未开门', '改约'].includes(e.kind) ? 'warn' : ['闭环', '访视'].includes(e.kind) ? 'done' : ''}`}>
+              <div key={e.id} className={`tl-item ${['转诊'].includes(e.kind) ? 'alert' : ['复查', '未开门', '改约', '决策'].includes(e.kind) ? 'warn' : ['闭环', '访视'].includes(e.kind) ? 'done' : ''}`}>
                 <div className="row between">
                   <span className="strong small">{e.title}</span>
                   <Badge color="gray">{e.kind}</Badge>
@@ -134,6 +142,7 @@ function VisitsTab({ visits }: { visits: Visit[] }) {
           <div className="grid2 mt8 small">
             <div>⚖️ 体重 <b>{v.weight ?? '-'} g</b></div>
             <div>🟡 黄疸 <b>{v.bilirubin ?? '-'} µmol/L</b>（{v.bilirubin_site}）</div>
+            <div>📟 设备 {v.device_no || '未记录'}</div>
             <div>脐带：{v.cord}</div>
             <div>大便 {v.stool_count} 次/{v.stool_color} · 小便 {v.urine_count} 次</div>
             <div>喂养：{v.feeding_type} {v.feeding_freq} 次/日</div>
@@ -141,6 +150,11 @@ function VisitsTab({ visits }: { visits: Visit[] }) {
             <div>乳房：{v.breast} · 情绪：{v.mood}</div>
             <div>伤口：{v.wound_check} · 照护：{v.care_ability}</div>
           </div>
+          {v.doctor_advice && (
+            <div className="advice-pre mt8" style={{ borderStyle: 'solid', borderColor: '#bfe6e4', background: 'var(--teal-soft)' }}>
+              <b>🩺 医生建议：</b>{v.doctor_advice}
+            </div>
+          )}
           {v.flags.length > 0 && (
             <div className="alert-box warn mt8" style={{ marginBottom: 8 }}>
               <ul className="flag-list">{v.flags.map((f, i) => <li key={i}>{f}</li>)}</ul>
@@ -314,6 +328,72 @@ function DocsConsultsTab({ d, onChanged }: { d: Detail; onChanged: () => void })
           </div>
         ))}
       </div>
+    </div>
+  )
+}
+
+// —— 黄疸临界值复查任务（档案内紧凑视图，完整操作在 /nurse/rechecks） ——
+function RecheckSection({ tasks, doctor }: { tasks: RecheckTask[]; doctor?: boolean }) {
+  return (
+    <div className="card">
+      <div className="row between mb8">
+        <div className="card-title" style={{ margin: 0 }}><span className="dot" style={{ background: 'var(--primary)' }} />黄疸临界值复查任务</div>
+        <Link className="btn ghost sm" to={doctor ? '/doctor/rechecks' : '/nurse/rechecks'}>打开复测中心 →</Link>
+      </div>
+      {tasks.map((t) => {
+        const v = t.source_visit
+        return (
+          <div key={t.id} className="card-inner-box mb8">
+            <div className="row between">
+              <span className="small strong">任务 #{t.id} · 应复查 {t.due_date}</span>
+              <Badge color={t.status === '已升级' ? 'red' : t.status === '已完成' ? 'green' : 'amber'}>{t.status}</Badge>
+            </div>
+            {v && (
+              <div className="small muted mt8">
+                前日黄疸 {v.bilirubin} µmol/L（{v.bilirubin_site}），设备 {v.device_no || '未记录'}，喂养 {v.feeding_freq} 次/日
+                {v.doctor_advice ? `；医生建议：${v.doctor_advice}` : ''}
+              </div>
+            )}
+            <div className="small mt8">
+              家属选择：{t.family_choice || '待选择'} · 上门护士：{t.assign_nurse_name || '未安排'} · 复测设备：{t.device_no || '未安排'}
+              {' '}· 准备提醒：{t.remind_prepared ? '已发送' : '未发送'} · 改约 {t.reschedule_count} 次
+            </div>
+            {t.risk_notice && <pre className="risk-notice mt8">{t.risk_notice}</pre>}
+            {t.doctor_decision && <div className="small mt8" style={{ color: 'var(--teal)' }}>🩺 社区医生：{t.doctor_decision}（{t.doctor_note}）</div>}
+          </div>
+        )
+      })}
+    </div>
+  )
+}
+
+function ReferralSection({ referrals }: { referrals: Referral[] }) {
+  return (
+    <div className="card">
+      <div className="card-title"><span className="dot" style={{ background: 'var(--red)' }} />转诊单（含前后趋势）</div>
+      {referrals.map((r) => (
+        <div key={r.id} className="card-inner-box mb8">
+          <div className="row between">
+            <span className="small strong">转诊单 #{r.id} · {fmtTime(r.created_at)}</span>
+            <Badge color={r.status === '待就诊' ? 'red' : 'green'}>{r.status}</Badge>
+          </div>
+          <table className="trend-table mt8">
+            <thead><tr><th>项目</th><th>前一天</th><th>复测</th></tr></thead>
+            <tbody>
+              <tr>
+                <td>黄疸</td>
+                <td>{r.bilirubin_prev ?? '-'} µmol/L（{r.bilirubin_site_prev}）</td>
+                <td className="trend-up">{r.bilirubin_now ?? '-'} µmol/L（{r.bilirubin_site_now}）</td>
+              </tr>
+              <tr><td>日龄</td><td>第 {(r.age_days_prev ?? 0) + 1} 天</td><td>第 {(r.age_days_now ?? 0) + 1} 天 / 阈值 {r.threshold_now}</td></tr>
+              <tr><td>体重</td><td>{r.weight_prev ?? '-'} g</td><td>{r.weight_now ?? '-'} g</td></tr>
+            </tbody>
+          </table>
+          {r.bilirubin_delta != null && <div className="small mt8" style={{ color: 'var(--red)' }}>24h 变化 {r.bilirubin_delta} µmol/L</div>}
+          <div className="small muted mt8">{r.trend_note}</div>
+          {r.hospital_feedback && <div className="small mt8" style={{ color: 'var(--green)' }}>就诊反馈：{r.hospital_feedback}</div>}
+        </div>
+      ))}
     </div>
   )
 }

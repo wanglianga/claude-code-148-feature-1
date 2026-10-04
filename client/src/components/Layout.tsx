@@ -10,11 +10,13 @@ const NAVS: Record<string, { to: string; ico: string; label: string }[]> = {
     { to: '/nurse', ico: '🏠', label: '工作台' },
     { to: '/nurse/appointments', ico: '📅', label: '预约' },
     { to: '/nurse/archives', ico: '📁', label: '档案' },
+    { to: '/nurse/rechecks', ico: '🟡', label: '复测' },
     { to: '/nurse/followups', ico: '🔄', label: '闭环' },
     { to: '/nurse/sync', ico: '📡', label: '同步' },
   ],
   doctor: [
     { to: '/doctor', ico: '🩺', label: '随访决策' },
+    { to: '/doctor/rechecks', ico: '🟡', label: '黄疸复测' },
     { to: '/nurse/archives', ico: '📁', label: '档案' },
   ],
   family: [

@@ -88,6 +88,8 @@ CREATE TABLE IF NOT EXISTS visits (
   need_referral INTEGER DEFAULT 0,
   need_lactation INTEGER DEFAULT 0,
   need_phone INTEGER DEFAULT 0,
+  device_no TEXT DEFAULT '',          -- 经皮胆红素仪设备编号
+  doctor_advice TEXT DEFAULT '',     -- 现场医生/医嘱建议（临界值时必录）
   created_offline INTEGER DEFAULT 0,   -- 是否离线草稿补录
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
@@ -141,6 +143,57 @@ CREATE TABLE IF NOT EXISTS events (
   created_at TEXT DEFAULT (datetime('now','localtime'))
 );
 
+-- 黄疸临界值复查任务（家属选择“次日复测”后生成，明确护士+设备；再次改约可升级社区医生）
+CREATE TABLE IF NOT EXISTS recheck_tasks (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id),
+  source_visit_id INTEGER NOT NULL REFERENCES visits(id),  -- 触发临界值的前一天访视
+  recheck_visit_id INTEGER REFERENCES visits(id),          -- 实际复测访视（完成后回填）
+  appointment_id INTEGER REFERENCES appointments(id),
+  family_choice TEXT DEFAULT '',        -- 复测/当天就诊/观察
+  status TEXT NOT NULL DEFAULT '待选择', -- 待选择/待复测/已就诊/观察中/已升级/已完成/已取消
+  assign_nurse_id INTEGER REFERENCES users(id),
+  device_no TEXT DEFAULT '',            -- 本次复测携带的设备编号
+  remind_prepared INTEGER DEFAULT 0,    -- 复测前是否已提醒家属准备喂养/排便记录
+  remind_at TEXT,
+  reschedule_count INTEGER DEFAULT 0,   -- 家属再次改约次数（>=1 升级社区医生）
+  escalated_at TEXT,
+  doctor_decision TEXT DEFAULT '',      -- 电话干预/建议直接就诊/继续观察
+  doctor_note TEXT DEFAULT '',
+  risk_notice TEXT DEFAULT '',          -- 家属选择观察时的风险告知文本
+  due_date TEXT,
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  updated_at TEXT DEFAULT (datetime('now','localtime'))
+);
+
+-- 转诊单：复测黄疸升高时生成，自动带入前一天记录便于医院判断变化趋势
+CREATE TABLE IF NOT EXISTS referrals (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  archive_id INTEGER NOT NULL REFERENCES archives(id),
+  recheck_task_id INTEGER REFERENCES recheck_tasks(id),
+  previous_visit_id INTEGER REFERENCES visits(id),
+  current_visit_id INTEGER REFERENCES visits(id),
+  followup_id INTEGER REFERENCES followups(id),
+  bilirubin_prev REAL,
+  bilirubin_site_prev TEXT DEFAULT '',
+  bilirubin_now REAL,
+  bilirubin_site_now TEXT DEFAULT '',
+  bilirubin_delta REAL,                 -- 24h 升高幅度
+  threshold_now REAL,
+  age_days_prev INTEGER,
+  age_days_now INTEGER,
+  weight_prev REAL,
+  weight_now REAL,
+  feeding_prev TEXT DEFAULT '',
+  feeding_now TEXT DEFAULT '',
+  trend_note TEXT DEFAULT '',           -- 变化趋势描述
+  status TEXT NOT NULL DEFAULT '待就诊', -- 待就诊/已就诊/已取消
+  created_by TEXT DEFAULT '系统',
+  created_at TEXT DEFAULT (datetime('now','localtime')),
+  visited_at TEXT,
+  hospital_feedback TEXT DEFAULT ''
+);
+
 CREATE TABLE IF NOT EXISTS sessions (
   token TEXT PRIMARY KEY,
   user_id INTEGER NOT NULL REFERENCES users(id),
@@ -152,7 +205,19 @@ CREATE INDEX IF NOT EXISTS idx_appt_status ON appointments(status);
 CREATE INDEX IF NOT EXISTS idx_visit_archive ON visits(archive_id);
 CREATE INDEX IF NOT EXISTS idx_followup_status ON followups(status);
 CREATE INDEX IF NOT EXISTS idx_events_archive ON events(archive_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_archive ON recheck_tasks(archive_id);
+CREATE INDEX IF NOT EXISTS idx_recheck_status ON recheck_tasks(status);
+CREATE INDEX IF NOT EXISTS idx_referral_archive ON referrals(archive_id);
 `)
+
+// —— 轻量迁移：兼容旧版数据库（CREATE TABLE IF NOT EXISTS 不会给已存在的表补列） ——
+function ensureColumn(table, column, ddl) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all().map((c) => c.name)
+  if (!cols.includes(column)) db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${ddl}`)
+}
+ensureColumn('visits', 'device_no', `TEXT DEFAULT ''`)
+ensureColumn('visits', 'doctor_advice', `TEXT DEFAULT ''`)
+ensureColumn('appointments', 'recheck_task_id', 'INTEGER REFERENCES recheck_tasks(id)')
 
 export function addEvent(archiveId, kind, title, detail = '', actor = '') {
   db.prepare('INSERT INTO events (archive_id, kind, title, detail, actor) VALUES (?,?,?,?,?)')

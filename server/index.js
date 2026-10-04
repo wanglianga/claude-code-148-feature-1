@@ -6,7 +6,12 @@ import fs from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import db, { addEvent } from './db.js'
 import { seed } from './seed.js'
-import { createVisit, closeFollowup } from './service.js'
+import {
+  createVisit, closeFollowup,
+  getRecheckTask, listRecheckTasks, familyChooseRecheck, assignRecheckTask,
+  markRecheckReminder, escalateRecheckOnReschedule, doctorRecheckDecision,
+  markReferralVisited, listReferrals,
+} from './service.js'
 import { assessVisit } from './risk.js'
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
@@ -63,6 +68,9 @@ app.get('/api/dashboard', auth, requireRole('nurse', 'doctor'), (req, res) => {
       maternalRisks: cnt(`SELECT COUNT(DISTINCT archive_id) c FROM followups WHERE status!='已闭环' AND type='电话随访'`),
       openFollowups: openFollowups.length,
       todayAppointments: cnt(`SELECT COUNT(*) c FROM appointments WHERE date(scheduled_time)=date(?) AND status='待访视'`, todayStr + ' 12:00'),
+      recheckPending: cnt(`SELECT COUNT(*) c FROM recheck_tasks WHERE status IN ('待选择','待安排','待复测','观察中')`),
+      recheckEscalated: cnt(`SELECT COUNT(*) c FROM recheck_tasks WHERE status='已升级'`),
+      referralsPending: cnt(`SELECT COUNT(*) c FROM referrals WHERE status='待就诊'`),
     },
     followupsByType: byType,
     todayAppointments: appts,
@@ -109,7 +117,12 @@ app.post('/api/appointments/:id/reschedule', auth, (req, res) => {
   db.prepare(`UPDATE appointments SET scheduled_time=?, status='待访视', reason=?, updated_at=datetime('now','localtime') WHERE id=?`)
     .run(t, reason || appt.reason, appt.id)
   addEvent(appt.archive_id, '改约', `预约改期至 ${t}`, reason, req.user.name)
-  res.json({ appointment: db.prepare('SELECT * FROM appointments WHERE id=?').get(appt.id) })
+  // 家属再次改约黄疸复测预约 → 自动升级社区医生（电话干预 / 建议直接就诊）
+  let escalated = null
+  if (req.user.role === 'family' && appt.recheck_task_id) {
+    escalated = escalateRecheckOnReschedule(appt.id, reason || '家属申请改期', req.user.name)
+  }
+  res.json({ appointment: db.prepare('SELECT * FROM appointments WHERE id=?').get(appt.id), escalated })
 })
 
 app.post('/api/appointments/:id/no-show', auth, requireRole('nurse'), (req, res) => {
@@ -154,12 +167,22 @@ app.get('/api/archives/:id', auth, (req, res) => {
     .map(v => ({ ...v, flags: JSON.parse(v.flags || '[]'), photos: JSON.parse(v.photos || '[]') }))
   res.json({
     archive,
-    appointments: db.prepare('SELECT a.*, u.name nurse_name FROM appointments a LEFT JOIN users u ON u.id=a.nurse_id WHERE a.archive_id=? ORDER BY a.scheduled_time DESC').all(archive.id),
+    appointments: db.prepare(`
+      SELECT a.*, u.name nurse_name, t.assign_nurse_id AS task_nurse_id, t.device_no AS task_device_no,
+             nu.name AS assign_nurse_name
+      FROM appointments a
+      LEFT JOIN users u ON u.id=a.nurse_id
+      LEFT JOIN recheck_tasks t ON t.id=a.recheck_task_id
+      LEFT JOIN users nu ON nu.id=t.assign_nurse_id
+      WHERE a.archive_id=? ORDER BY a.scheduled_time DESC`).all(archive.id),
     visits,
     followups: db.prepare('SELECT * FROM followups WHERE archive_id=? ORDER BY created_at DESC').all(archive.id),
     documents: db.prepare('SELECT id, archive_id, type, filename, data_url, note, created_at FROM documents WHERE archive_id=? ORDER BY created_at DESC').all(archive.id),
     consults: db.prepare('SELECT * FROM consults WHERE archive_id=? ORDER BY created_at DESC').all(archive.id),
     events: db.prepare('SELECT * FROM events WHERE archive_id=? ORDER BY created_at DESC, id DESC LIMIT 100').all(archive.id),
+    recheckTasks: listRecheckTasks('all').filter((t) => t.archive_id === archive.id)
+      .map((t) => getRecheckTask(t.id)),
+    referrals: listReferrals(archive.id),
   })
 })
 
@@ -242,9 +265,16 @@ app.get('/api/family/overview', auth, requireRole('family'), (req, res) => {
   const nextAppt = db.prepare(`SELECT * FROM appointments WHERE archive_id=? AND status='待访视' ORDER BY scheduled_time LIMIT 1`).get(archive.id)
   res.json({
     archive, visits, followups, nextAppointment: nextAppt || null,
-    appointments: db.prepare('SELECT * FROM appointments WHERE archive_id=? ORDER BY scheduled_time DESC').all(archive.id),
+    appointments: db.prepare(`
+      SELECT a.*, t.assign_nurse_id, nu.name AS assign_nurse_name, t.device_no
+      FROM appointments a
+      LEFT JOIN recheck_tasks t ON t.id=a.recheck_task_id
+      LEFT JOIN users nu ON nu.id=t.assign_nurse_id
+      WHERE a.archive_id=? ORDER BY a.scheduled_time DESC`).all(archive.id),
     documents: db.prepare('SELECT id, type, filename, data_url, note, created_at FROM documents WHERE archive_id=? ORDER BY created_at DESC').all(archive.id),
     consults: db.prepare('SELECT * FROM consults WHERE archive_id=? ORDER BY created_at DESC').all(archive.id),
+    recheckTasks: listRecheckTasks('all').filter((t) => t.archive_id === archive.id).map((t) => getRecheckTask(t.id)),
+    referrals: listReferrals(archive.id),
   })
 })
 
@@ -291,6 +321,89 @@ app.post('/api/consults/:id/reply', auth, requireRole('nurse', 'doctor'), (req, 
 })
 
 app.get('/api/health', (req, res) => res.json({ ok: true, ts: Date.now() }))
+
+// ---------- 黄疸临界值复查流程 ----------
+function taskOwnedByFamily(task, userId) {
+  const arch = db.prepare('SELECT family_user_id FROM archives WHERE id=?').get(task.archive_id)
+  return arch && arch.family_user_id === userId
+}
+
+app.get('/api/rechecks', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  const scope = req.query.scope === 'all' ? 'all' : 'open'
+  res.json({ tasks: listRecheckTasks(scope).map((t) => getRecheckTask(t.id)) })
+})
+
+app.get('/api/rechecks/:id', auth, (req, res) => {
+  const t = getRecheckTask(Number(req.params.id))
+  if (!t) return res.status(404).json({ error: '复查任务不存在' })
+  if (req.user.role === 'family' && !taskOwnedByFamily(t, req.user.id)) return res.status(403).json({ error: '无权访问' })
+  res.json({ task: t })
+})
+
+// 家属选择：次日复测 / 当天去儿科 / 居家观察（护士也可代家属登记）
+app.post('/api/rechecks/:id/choice', auth, (req, res) => {
+  const t = getRecheckTask(Number(req.params.id))
+  if (!t) return res.status(404).json({ error: '复查任务不存在' })
+  if (req.user.role === 'family' && !taskOwnedByFamily(t, req.user.id)) return res.status(403).json({ error: '无权操作' })
+  try {
+    const out = familyChooseRecheck(t.id, req.body?.choice, req.user.name)
+    res.status(201).json(out)
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+// 安排复测任务：明确护士 + 设备 + 时间
+app.post('/api/rechecks/:id/assign', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  try {
+    const out = assignRecheckTask(Number(req.params.id), {
+      nurseId: req.body?.nurseId || req.user.id,
+      deviceNo: req.body?.deviceNo,
+      scheduledTime: req.body?.scheduledTime,
+    }, req.user.name)
+    res.status(201).json(out)
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+// 复测前提醒家属准备喂养与排便记录
+app.post('/api/rechecks/:id/remind', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  try {
+    res.json(markRecheckReminder(Number(req.params.id), req.user.name))
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+// 社区医生对升级任务的判断
+app.post('/api/rechecks/:id/doctor-decide', auth, requireRole('doctor', 'nurse'), (req, res) => {
+  try {
+    const out = doctorRecheckDecision(Number(req.params.id), req.body?.decision, req.body?.note, req.user.name)
+    res.json(out)
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
+
+// 护士花名册（安排复测护士时选择）
+app.get('/api/nurses', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  res.json({ nurses: db.prepare(`SELECT id, name, title, phone FROM users WHERE role='nurse' ORDER BY id`).all() })
+})
+
+// ---------- 转诊单 ----------
+app.get('/api/referrals', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  res.json({ referrals: listReferrals() })
+})
+
+app.post('/api/referrals/:id/visited', auth, requireRole('nurse', 'doctor'), (req, res) => {
+  try {
+    const r = markReferralVisited(Number(req.params.id), req.body?.feedback || '', req.user.name)
+    res.json({ referral: r })
+  } catch (e) {
+    res.status(e.status || 500).json({ error: e.message })
+  }
+})
 
 // ---------- 生产模式：托管前端构建产物 ----------
 const dist = path.join(__dirname, '..', 'client', 'dist')

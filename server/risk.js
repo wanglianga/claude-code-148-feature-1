@@ -27,6 +27,7 @@ export function assessVisit(archive, v) {
   const advice = []
   let level = 0 // 0低 1中 2高 3危急
   const raise = (l) => { if (l > level) level = l }
+  let nearJaundice = false   // 黄疸接近转诊阈值（临界值复查流程触发条件）
 
   const ageDays = ageDaysOf(archive.birth_date, v.visit_time)
   const threshold = bilirubinThreshold(ageDays)
@@ -40,6 +41,7 @@ export function assessVisit(archive, v) {
       advice.push('黄疸值达到光疗参考阈值，建议立即转诊儿科评估。')
     } else if (b >= threshold - NEAR_GAP) {
       raise(2)
+      nearJaundice = true
       flags.push(`黄疸值 ${b} µmol/L 接近阈值 ${threshold}（差 ${threshold - b}）`)
       advice.push('黄疸值接近阈值，建议 24~48 小时内复查胆红素，加强喂养促进排泄。')
     } else if (b >= threshold - NEAR_GAP * 2) {
@@ -165,6 +167,7 @@ export function assessVisit(archive, v) {
   return {
     riskLevel: ['低', '中', '高', '危急'][level],
     flags,
+    nearJaundice,
     needRecheck: needRecheck ? 1 : 0,
     needReferral: needReferral ? 1 : 0,
     needLactation: needLactation ? 1 : 0,
